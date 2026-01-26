@@ -4,13 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
-
-const dbFile = "leetcode.db"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -39,7 +38,7 @@ func main() {
 
 func handleAdd(db *sql.DB) {
 	if len(os.Args) != 4 {
-		fmt.Println("Usage: leetcode add \"Problem Name\" <difficulty 1-5>")
+		fmt.Println(`Usage: recall add "Problem Name" <difficulty 1-5>`)
 		return
 	}
 
@@ -96,7 +95,7 @@ func handleDue(db *sql.DB) {
 
 func handleUpdate(db *sql.DB) {
 	if len(os.Args) != 4 {
-		fmt.Println("Usage: leetcode update \"Problem Name\" <difficulty 1-5>")
+		fmt.Println(`Usage: recall update "Problem Name" <difficulty 1-5>`)
 		return
 	}
 
@@ -167,7 +166,20 @@ func nextReview(difficulty int, from time.Time) time.Time {
 /* -------------------- DB INIT -------------------- */
 
 func initDB() *sql.DB {
-	db, err := sql.Open("sqlite3", dbFile)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic("cannot determine home directory")
+	}
+
+	dir := filepath.Join(home, ".recall")
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		panic("cannot create data directory")
+	}
+
+	dbPath := filepath.Join(dir, "recall.db")
+
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		panic(err)
 	}
@@ -201,13 +213,13 @@ func mustDifficulty(arg string) int {
 
 func printUsage() {
 	fmt.Println(`
-LeetCode Spaced Repetition CLI
+Recall — LeetCode Spaced Repetition CLI
 
 Commands:
-  add "Problem Name" <1-5>     Add new problem
-  update "Problem Name" <1-5>  Update difficulty after recap
-  due                          Show problems due today
-  list                         List all problems
+  recall add "Problem Name" <1-5>     Add new problem
+  recall update "Problem Name" <1-5>  Update difficulty after recap
+  recall due                          Show problems due today
+  recall list                         List all problems
 `)
 }
 
