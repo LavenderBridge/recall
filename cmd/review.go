@@ -11,7 +11,11 @@ import (
 	"github.com/LavenderBridge/spaced-repetition/internal/db"
 	"github.com/LavenderBridge/spaced-repetition/internal/models"
 	"github.com/spf13/cobra"
+	"os/exec"
+	"runtime"
 )
+
+var reviewOpen bool
 
 var reviewCmd = &cobra.Command{
 	Use:   "review [optional problem name]",
@@ -63,6 +67,12 @@ If no name provided, review all problems due today.`,
 				fmt.Printf("Notes: %s\n", p.Notes)
 			}
 			fmt.Println("========================================")
+			
+			if reviewOpen && p.URL != "" {
+				fmt.Println("🌐 Opening URL in browser...")
+				openBrowser(p.URL)
+			}
+
 			fmt.Println("Press Enter to show quality prompt...")
 			reader.ReadString('\n')
 
@@ -91,4 +101,22 @@ If no name provided, review all problems due today.`,
 
 func init() {
 	rootCmd.AddCommand(reviewCmd)
+	reviewCmd.Flags().BoolVarP(&reviewOpen, "open", "o", false, "Open problem URL in browser")
+}
+
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
+	}
+	if err != nil {
+		fmt.Printf("❌ Failed to open browser: %v\n", err)
+	}
 }

@@ -188,6 +188,51 @@ func (s *Store) UpdateProblem(p models.Problem) error {
 	return err
 }
 
+func (s *Store) UpdateProblemDetails(p models.Problem) error {
+	// 1. Update core fields
+	query := `
+		UPDATE problems
+		SET name=?, url=?, notes=?, difficulty=?
+		WHERE id=?
+	`
+	_, err := s.db.Exec(query, p.Name, p.URL, p.Notes, p.Difficulty, p.ID)
+	if err != nil {
+		return err
+	}
+
+	// 2. Update tags (Full replace strategy: Delete all then re-add works, or diff. 
+	//    For MVP CLI, clear and re-add is simplest safe approach)
+	
+	// Only update tags if the list is not nil (empty list might mean remove all, nil means don't touch)
+	// But in our struct Tag is a slice, so it's either empty or has items. 
+	// We need a way to know if we should update tags.
+	// For now, let's assume if this is called, we want to set the tags to whatever is in p.Tags
+	// Note: careful if we just want to update name and keep tags. 
+	// The caller should ideally provide the full object or we need a way to partial update.
+	// Given the CLI 'edit' command will probably read existing, apply flags, then save, 
+	// we can assume p.Tags contains the final desired state.
+
+	_, err = s.db.Exec("DELETE FROM problem_tags WHERE problem_id=?", p.ID)
+	if err != nil {
+		return err
+	}
+
+	for _, tag := range p.Tags {
+		if err := s.linkTag(p.ID, tag.Name); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Store) DeleteProblem(id int) error {
+	// Cascading delete should handle problem_tags if defined in schema, 
+	// but let's be explicit if schema didn't have cascade (which we did put in initSchema).
+	_, err := s.db.Exec("DELETE FROM problems WHERE id=?", id)
+	return err
+}
+
 func (s *Store) ListProblems(dueOnly bool) ([]models.Problem, error) {
 	var query string
 	if dueOnly {
