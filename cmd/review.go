@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/LavenderBridge/spaced-repetition/internal/algorithm"
 	"github.com/LavenderBridge/spaced-repetition/internal/db"
@@ -67,6 +68,24 @@ If no name provided, review all problems due today.`,
 				fmt.Printf("Notes: %s\n", p.Notes)
 			}
 			fmt.Println("========================================")
+
+			// Show last review info
+			lastReview, _ := store.GetLastReview(p.ID)
+			if lastReview != nil {
+				since := time.Since(lastReview.ReviewedAt)
+				days := int(since.Hours() / 24)
+				var timeStr string
+				if days == 0 {
+					timeStr = "Today"
+				} else if days == 1 {
+					timeStr = "Yesterday"
+				} else {
+					timeStr = fmt.Sprintf("%dD ago", days)
+				}
+				fmt.Printf("Last reviewed: %s (%s) - Quality: %d\n", lastReview.ReviewedAt.Format("2006-01-02"), timeStr, lastReview.Quality)
+			} else {
+				fmt.Println("Last reviewed: Never")
+			}
 			
 			if reviewOpen && p.URL != "" {
 				fmt.Println("🌐 Opening URL in browser...")
@@ -86,11 +105,27 @@ If no name provided, review all problems due today.`,
 				continue
 			}
 
+			fmt.Print("Add a note (optional): ")
+			note, _ := reader.ReadString('\n')
+			note = strings.TrimSpace(note)
+
 			// Update
 			updated := algorithm.CalculateReview(p, quality)
 			if err := store.UpdateProblem(updated); err != nil {
 				fmt.Printf("❌ Error updating problem: %v\n", err)
 			} else {
+				// Save review history
+				review := models.Review{
+					ProblemID:  p.ID,
+					Quality:    quality,
+					ReviewedAt: time.Now(),
+					Notes:      note,
+					Interval:   updated.Interval,
+					EaseFactor: updated.EaseFactor,
+				}
+				if err := store.AddReview(review); err != nil {
+					fmt.Printf("⚠️ Failed to save review history: %v\n", err)
+				}
 				fmt.Printf("✅ Updated! Next review in %d days.\n", updated.Interval)
 			}
 		}

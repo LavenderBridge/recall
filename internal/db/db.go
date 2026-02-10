@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
 	"github.com/LavenderBridge/spaced-repetition/internal/models"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -100,6 +102,27 @@ func initSchema(db *sql.DB) error {
 		db.Exec("ALTER TABLE problems ADD COLUMN notes TEXT")
 		db.Exec("ALTER TABLE problems ADD COLUMN interval INTEGER DEFAULT 1")
 		db.Exec("ALTER TABLE problems ADD COLUMN ease_factor REAL DEFAULT 2.5")
+	}
+
+	// Reviews table
+	queryReviews := `
+	CREATE TABLE IF NOT EXISTS reviews (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		problem_id INTEGER,
+		quality INTEGER,
+		reviewed_at DATETIME,
+		notes TEXT,
+		interval_snapshot INTEGER,
+		ease_factor_snapshot REAL,
+		FOREIGN KEY (problem_id) REFERENCES problems(id) ON DELETE CASCADE
+	);
+	`
+	if _, err := db.Exec(queryReviews); err != nil {
+		return err
+	}
+
+	if err := migrateLegacyReviews(db); err != nil {
+		fmt.Printf("⚠️ Migration warning: %v\n", err)
 	}
 
 	return nil
@@ -281,4 +304,120 @@ func (s *Store) getTagsForProblem(problemID int) ([]models.Tag, error) {
 		tags = append(tags, t)
 	}
 	return tags, nil
+}
+
+// migrateLegacyReviews backfills the reviews table from problems that have been reviewed but have no history.
+func migrateLegacyReviews(db *sql.DB) error {
+	// Find problems that have been reviewed (last_reviewed > epoch)
+	rows, err := db.Query(`SELECT id, last_reviewed, interval, ease_factor FROM problems WHERE last_reviewed IS NOT NULL And last_reviewed > '1970-01-01'`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type legacyProb struct {
+		ID           int
+		LastReviewed time.Time
+		Interval     int
+		EaseFactor   float64
+	}
+
+	var toMigrate []legacyProb
+
+	for rows.Next() {
+		var p legacyProb
+		if err := rows.Scan(&p.ID, &p.LastReviewed, &p.Interval, &p.EaseFactor); err != nil {
+			continue
+		}
+		toMigrate = append(toMigrate, p)
+	}
+
+	for _, p := range toMigrate {
+		// Check if any review exists
+		var count int
+		err := db.QueryRow("SELECT COUNT(*) FROM reviews WHERE problem_id = ?", p.ID).Scan(&count)
+		if err != nil {
+			continue
+		}
+
+		if count == 0 {
+			// Insert synthetic review
+			_, err := db.Exec(`
+				INSERT INTO reviews (problem_id, quality, reviewed_at, notes, interval_snapshot, ease_factor_snapshot)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				p.ID, 3, p.LastReviewed, "Imported from legacy data", p.Interval, p.EaseFactor,
+			)
+			if err != nil {
+				fmt.Printf("Failed to migrate problem %d: %v\n", p.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) AddReview(r models.Review) error {
+	_, err := s.db.Exec(`
+		INSERT INTO reviews (problem_id, quality, reviewed_at, notes, interval_snapshot, ease_factor_snapshot)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		r.ProblemID, r.Quality, r.ReviewedAt, r.Notes, r.Interval, r.EaseFactor,
+	)
+	return err
+}
+
+func (s *Store) GetLastReview(problemID int) (*models.Review, error) {
+	row := s.db.QueryRow(`
+		SELECT id, problem_id, quality, reviewed_at, notes, interval_snapshot, ease_factor_snapshot
+		FROM reviews 
+		WHERE problem_id = ? 
+		ORDER BY reviewed_at DESC 
+		LIMIT 1`, problemID)
+
+	var r models.Review
+	var notes sql.NullString
+	if err := row.Scan(&r.ID, &r.ProblemID, &r.Quality, &r.ReviewedAt, &notes, &r.Interval, &r.EaseFactor); err != nil {
+		return nil, err
+	}
+	r.Notes = notes.String
+	return &r, nil
+}
+
+func (s *Store) GetReviewStats() (*models.ReviewStats, error) {
+	stats := &models.ReviewStats{
+		CountByDifficulty: make(map[int]int),
+	}
+
+	// Total Reviews
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM reviews").Scan(&stats.TotalReviews); err != nil {
+		return nil, err
+	}
+
+	// Reviews Last 7 Days
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM reviews WHERE reviewed_at > date('now', '-7 days')").Scan(&stats.ReviewsLast7Days); err != nil {
+		return nil, err
+	}
+
+	// Average Quality
+	var avg sql.NullFloat64
+	if err := s.db.QueryRow("SELECT AVG(quality) FROM reviews").Scan(&avg); err != nil {
+		return nil, err
+	}
+	if avg.Valid {
+		stats.AverageQuality = avg.Float64
+	}
+
+	// Breakdown by difficulty (from problems table, not reviews, usually)
+	rows, err := s.db.Query("SELECT difficulty, COUNT(*) FROM problems GROUP BY difficulty")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var diff, count int
+		if err := rows.Scan(&diff, &count); err == nil {
+			stats.CountByDifficulty[diff] = count
+		}
+	}
+
+	return stats, nil
 }
